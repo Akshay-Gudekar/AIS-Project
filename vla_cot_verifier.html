@@ -1,0 +1,1540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VLA-4 · CoT Safety Verifier</title>
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Exo+2:wght@300;400;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.2/dist/coco-ssd.min.js"></script>
+<style>
+  :root {
+    --bg: #050a12;
+    --panel: #080f1a;
+    --panel2: #0b1524;
+    --border: #1a3a5c;
+    --accent: #00d4ff;
+    --accent2: #00ff9f;
+    --warn: #ff6b35;
+    --danger: #ff2255;
+    --safe: #00ff9f;
+    --text: #c8e0f0;
+    --dim: #4a6a8a;
+    --glow: 0 0 20px rgba(0, 212, 255, 0.3);
+    --glow2: 0 0 20px rgba(0, 255, 159, 0.3);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Exo 2', sans-serif;
+    font-size: 14px;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: 
+      radial-gradient(ellipse 80% 50% at 50% -20%, rgba(0, 212, 255, 0.08) 0%, transparent 60%),
+      radial-gradient(ellipse 40% 40% at 80% 80%, rgba(0, 255, 159, 0.05) 0%, transparent 60%);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* Grid lines overlay */
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(0, 212, 255, 0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0, 212, 255, 0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .app {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    grid-template-rows: auto 1fr;
+    min-height: 100vh;
+  }
+
+  /* HEADER */
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 28px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(8, 15, 26, 0.9);
+    backdrop-filter: blur(10px);
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .logo-icon {
+    width: 40px;
+    height: 40px;
+    border: 2px solid var(--accent);
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: var(--glow);
+    font-size: 18px;
+  }
+
+  .logo-text { 
+    font-family: 'Share Tech Mono', monospace;
+  }
+  .logo-title { 
+    font-size: 16px; 
+    color: var(--accent);
+    letter-spacing: 2px;
+  }
+  .logo-sub { 
+    font-size: 10px; 
+    color: var(--dim);
+    letter-spacing: 3px;
+    text-transform: uppercase;
+  }
+
+  .header-status {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+  }
+
+  .status-pill {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 14px;
+    background: rgba(0,0,0,0.4);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 11px;
+    color: var(--dim);
+  }
+
+  .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--dim);
+  }
+  .dot.active { 
+    background: var(--accent2); 
+    box-shadow: 0 0 10px var(--accent2);
+    animation: pulse 2s infinite;
+  }
+  .dot.warn { background: var(--warn); box-shadow: 0 0 10px var(--warn); }
+  .dot.danger { background: var(--danger); box-shadow: 0 0 10px var(--danger); animation: pulse 0.5s infinite; }
+
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+
+  /* MAIN GRID */
+  .main {
+    display: grid;
+    grid-template-columns: 1fr 320px;
+    grid-template-rows: 1fr 1fr;
+    gap: 1px;
+    background: var(--border);
+    height: calc(100vh - 73px);
+  }
+
+  .panel {
+    background: var(--panel);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(0,0,0,0.3);
+    flex-shrink: 0;
+  }
+
+  .panel-title {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 11px;
+    color: var(--accent);
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .panel-title::before {
+    content: '';
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border: 1px solid var(--accent);
+    transform: rotate(45deg);
+  }
+
+  .panel-body {
+    flex: 1;
+    overflow: hidden;
+    position: relative;
+  }
+
+  /* CAMERA PANEL */
+  .camera-panel { grid-row: 1 / 3; }
+
+  #video, #canvas {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  #canvas { 
+    position: absolute; 
+    top: 0; left: 0; 
+    pointer-events: none;
+  }
+
+  .cam-overlay {
+    position: absolute;
+    bottom: 0;
+    left: 0; right: 0;
+    padding: 16px;
+    background: linear-gradient(transparent, rgba(5, 10, 18, 0.9));
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .btn {
+    padding: 9px 20px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: 'Exo 2', sans-serif;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    transition: all 0.2s;
+    text-transform: uppercase;
+  }
+
+  .btn-primary {
+    background: var(--accent);
+    color: #000;
+    box-shadow: 0 0 20px rgba(0,212,255,0.4);
+  }
+  .btn-primary:hover { 
+    background: #33ddff;
+    box-shadow: 0 0 30px rgba(0,212,255,0.6);
+    transform: translateY(-1px);
+  }
+  .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+
+  .btn-secondary {
+    background: transparent;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+  }
+  .btn-secondary:hover { background: rgba(0,212,255,0.1); }
+
+  .btn-detect {
+    background: var(--accent2);
+    color: #000;
+    box-shadow: 0 0 20px rgba(0,255,159,0.4);
+  }
+  .btn-detect:hover { 
+    background: #33ffb3;
+    box-shadow: 0 0 30px rgba(0,255,159,0.6);
+    transform: translateY(-1px);
+  }
+  .btn-detect:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+
+  .cam-status {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 11px;
+    color: var(--dim);
+  }
+
+  /* Camera corners */
+  .cam-corner {
+    position: absolute;
+    width: 24px; height: 24px;
+    border-color: var(--accent);
+    border-style: solid;
+    opacity: 0.6;
+  }
+  .cam-corner.tl { top: 12px; left: 12px; border-width: 2px 0 0 2px; }
+  .cam-corner.tr { top: 12px; right: 12px; border-width: 2px 2px 0 0; }
+  .cam-corner.bl { bottom: 70px; left: 12px; border-width: 0 0 2px 2px; }
+  .cam-corner.br { bottom: 70px; right: 12px; border-width: 0 2px 2px 0; }
+
+  /* OBJECTS PANEL - scrollable list */
+  #objects-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 10px;
+  }
+
+  .obj-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    animation: slideIn 0.3s ease;
+  }
+
+  @keyframes slideIn { from { opacity:0; transform: translateX(10px); } to { opacity:1; transform: translateX(0); } }
+
+  .obj-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .obj-name {
+    flex: 1;
+    font-weight: 600;
+    text-transform: capitalize;
+    font-size: 13px;
+  }
+
+  .obj-conf {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 11px;
+    color: var(--dim);
+  }
+
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--dim);
+    gap: 10px;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 12px;
+    text-align: center;
+  }
+
+  .empty-icon { font-size: 36px; opacity: 0.4; }
+
+  /* CoT PANEL */
+  .cot-panel { 
+    background: var(--panel); 
+    grid-column: 2;
+    grid-row: 1 / 3;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* PROMPT PANEL */
+  .prompt-panel {
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  #prompt-input {
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-family: 'Exo 2', sans-serif;
+    font-size: 13px;
+    padding: 10px 14px;
+    resize: vertical;
+    min-height: 60px;
+    transition: border-color 0.2s;
+    outline: none;
+  }
+
+  #prompt-input:focus { border-color: var(--accent); }
+
+  .prompt-footer {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .scenario-btn {
+    padding: 4px 10px;
+    background: transparent;
+    border: 1px solid var(--dim);
+    border-radius: 3px;
+    color: var(--dim);
+    font-size: 10px;
+    cursor: pointer;
+    font-family: 'Share Tech Mono', monospace;
+    transition: all 0.2s;
+    text-transform: uppercase;
+  }
+
+  .scenario-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* COT OUTPUT */
+  .cot-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 14px;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 12px;
+    line-height: 1.7;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .cot-step {
+    display: flex;
+    gap: 10px;
+    animation: fadeUp 0.4s ease;
+  }
+
+  @keyframes fadeUp { from { opacity:0; transform: translateY(8px); } to { opacity:1; transform: translateY(0); } }
+
+  .cot-num {
+    color: var(--accent);
+    flex-shrink: 0;
+    width: 24px;
+  }
+
+  .cot-text { color: var(--text); line-height: 1.6; }
+
+  .cot-warn { color: var(--warn); }
+  .cot-danger { color: var(--danger); font-weight: bold; }
+  .cot-safe { color: var(--accent2); }
+  .cot-info { color: var(--accent); }
+  .cot-halt { 
+    padding: 8px 12px; 
+    border: 1px solid var(--danger); 
+    border-radius: 4px;
+    background: rgba(255, 34, 85, 0.1);
+    color: var(--danger);
+    font-size: 13px;
+    width: 100%;
+    text-align: center;
+    letter-spacing: 1px;
+  }
+
+  .cot-success {
+    padding: 8px 12px;
+    border: 1px solid var(--accent2);
+    border-radius: 4px;
+    background: rgba(0, 255, 159, 0.08);
+    color: var(--accent2);
+    font-size: 13px;
+    width: 100%;
+    text-align: center;
+    letter-spacing: 1px;
+  }
+
+  .typing-indicator {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--dim);
+    font-size: 11px;
+    padding: 4px 0;
+  }
+
+  .typing-dot {
+    width: 5px; height: 5px;
+    background: var(--dim);
+    border-radius: 50%;
+    animation: bounce 1.2s infinite;
+  }
+  .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+  .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+
+  @keyframes bounce { 0%,100%{transform:translateY(0);opacity:0.4;} 50%{transform:translateY(-4px);opacity:1;} }
+
+  /* API KEY INPUT */
+  .api-row {
+    padding: 8px 14px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
+  #api-key {
+    flex: 1;
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--dim);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 10px;
+    padding: 6px 10px;
+    outline: none;
+  }
+  #api-key:focus { border-color: var(--accent); color: var(--text); }
+
+  .api-label { 
+    font-size: 9px; 
+    color: var(--dim); 
+    text-transform: uppercase; 
+    letter-spacing: 1px; 
+    white-space: nowrap;
+    font-family: 'Share Tech Mono', monospace;
+  }
+
+  /* DIVIDER */
+  .panel-divider {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 0;
+  }
+
+  /* Model loading */
+  .model-status {
+    padding: 6px 14px;
+    border-top: 1px solid var(--border);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 10px;
+    color: var(--dim);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .spinner {
+    width: 10px; height: 10px;
+    border: 2px solid var(--dim);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    flex-shrink: 0;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Captured image display */
+  #captured-img {
+    display: none;
+    width: 100%; height: 100%;
+    object-fit: cover;
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .danger-banner {
+    padding: 10px 16px;
+    background: rgba(255,34,85,0.12);
+    border-top: 2px solid var(--danger);
+    border-bottom: 1px solid var(--border);
+    color: var(--danger);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 11px;
+    text-align: center;
+    letter-spacing: 2px;
+    display: none;
+    animation: blink 1s step-end infinite;
+  }
+  @keyframes blink { 50% { opacity:0.5; } }
+
+  .cot-divider {
+    height: 1px;
+    background: var(--border);
+    margin: 6px 0;
+    width: 100%;
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- HEADER -->
+  <header class="header">
+    <div class="logo">
+      <div class="logo-icon">🤖</div>
+      <div class="logo-text">
+        <div class="logo-title">VLA-4 :: COT VERIFIER</div>
+        <div class="logo-sub">Lightweight Chain-of-Thought Safety Verifier · Vision–Language–Action</div>
+      </div>
+    </div>
+    <div class="header-status">
+      <div class="status-pill" id="cam-status-pill">
+        <div class="dot" id="cam-dot"></div>
+        <span id="cam-label">CAM OFFLINE</span>
+      </div>
+      <div class="status-pill" id="model-pill">
+        <div class="dot" id="model-dot"></div>
+        <span id="model-label">MODEL LOADING</span>
+      </div>
+      <div class="status-pill" id="safety-pill">
+        <div class="dot" id="safety-dot"></div>
+        <span id="safety-label">VERIFIER IDLE</span>
+      </div>
+    </div>
+  </header>
+
+  <div class="danger-banner" id="danger-banner">⚠ SAFETY VIOLATION DETECTED — ACTION BLOCKED ⚠</div>
+
+  <!-- MAIN GRID -->
+  <div class="main">
+
+    <!-- CAMERA PANEL -->
+    <div class="panel camera-panel" id="camera-panel">
+      <div class="panel-header">
+        <div class="panel-title">Visual Input · Camera Feed</div>
+        <span id="detection-info" style="font-size:11px;color:var(--dim);font-family:'Share Tech Mono',monospace;">—</span>
+      </div>
+      <div class="panel-body" id="cam-body">
+        <div class="empty-state" id="cam-empty">
+          <div class="empty-icon">📷</div>
+          <div>CAMERA OFFLINE</div>
+          <div style="font-size:10px;color:var(--dim);margin-top:4px;">Click START CAMERA to initialize visual feed</div>
+          <button class="btn btn-primary" style="margin-top:12px;" onclick="startCamera()">START CAMERA</button>
+        </div>
+        <video id="video" autoplay playsinline style="display:none;"></video>
+        <img id="captured-img" alt="Captured frame">
+        <canvas id="canvas"></canvas>
+        <div class="cam-corner tl"></div>
+        <div class="cam-corner tr"></div>
+        <div class="cam-corner bl"></div>
+        <div class="cam-corner br"></div>
+        <div class="cam-overlay" id="cam-overlay" style="display:none;">
+          <button class="btn btn-primary" id="btn-capture" onclick="capturePhoto()" disabled>📸 CAPTURE</button>
+          <button class="btn btn-detect" id="btn-detect" onclick="detectObjects()" disabled>🔍 DETECT OBJECTS</button>
+          <button class="btn btn-secondary" onclick="resetCamera()">↺ RESET</button>
+          <span class="cam-status" id="cam-action-status">Camera ready</span>
+        </div>
+      </div>
+      <div class="model-status" id="model-status-bar">
+        <div class="spinner" id="model-spinner"></div>
+        <span id="model-status-text">Loading COCO-SSD object detection model...</span>
+        <span style="margin-left:auto;font-size:9px;color:var(--dim);">
+          ─── <span style="color:var(--accent)">━━</span> COCO-SSD &nbsp;
+          <span style="color:var(--accent2)">- - -</span> CLAUDE VISION ◆
+        </span>
+      </div>
+    </div>
+
+    <!-- OBJECT LIST PANEL -->
+    <div class="panel" style="grid-column:2;grid-row:1;display:flex;flex-direction:column;">
+      <div class="panel-header" style="flex-shrink:0;">
+        <div class="panel-title">Detected Objects</div>
+        <span id="obj-count" style="font-size:11px;color:var(--dim);font-family:'Share Tech Mono',monospace;">0 OBJECTS</span>
+      </div>
+      <div class="panel-body" style="overflow-y:auto;flex:1;">
+        <div id="objects-panel" style="padding:10px;display:flex;flex-direction:column;gap:5px;min-height:100%;">
+          <div class="empty-state" id="obj-empty">
+            <div class="empty-icon">🔎</div>
+            <div>NO OBJECTS DETECTED</div>
+            <div style="font-size:10px;margin-top:4px;">Capture image and run detection</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PROMPT + COT PANEL -->
+    <div class="cot-panel" style="grid-column:2;grid-row:2;">
+      <div class="panel-header">
+        <div class="panel-title">Command &amp; Chain-of-Thought</div>
+        <span style="font-size:10px;color:var(--dim);font-family:'Share Tech Mono',monospace;">VERIFIER v1.0</span>
+      </div>
+
+      <!-- API Key -->
+      <div class="api-row">
+        <span class="api-label">API KEY</span>
+        <input type="password" id="api-key" placeholder="sk-ant-... (optional – uses demo mode if blank)">
+      </div>
+
+      <!-- Prompt -->
+      <div class="prompt-panel">
+        <textarea id="prompt-input" placeholder="Enter robot action command...&#10;e.g. 'take the knife and cut the apple'"></textarea>
+        <div class="prompt-footer">
+          <span style="font-size:10px;color:var(--dim);font-family:'Share Tech Mono',monospace;align-self:center;">QUICK:</span>
+          <button class="scenario-btn" onclick="setScenario(1)">S-1 Valid</button>
+          <button class="scenario-btn" onclick="setScenario(2)">S-2 Hallucination</button>
+          <button class="scenario-btn" onclick="setScenario(3)">S-3 Safety</button>
+          <button class="btn btn-primary" style="margin-left:auto;padding:6px 16px;font-size:12px;" id="btn-run" onclick="runCOT()" disabled>▶ RUN</button>
+        </div>
+      </div>
+
+      <hr class="panel-divider">
+
+      <!-- COT Output -->
+      <div class="cot-body" id="cot-body">
+        <div class="empty-state" style="height:100%;">
+          <div class="empty-icon" style="font-size:28px;">💭</div>
+          <div>CHAIN-OF-THOUGHT IDLE</div>
+          <div style="font-size:10px;margin-top:4px;">Detect objects, then submit a command</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ─── STATE ───────────────────────────────────────────────────────────────────
+let cocoModel = null;
+let stream = null;
+let detectedObjects = [];
+let capturedImageData = null;
+
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+// ─── COLORS FOR BOUNDING BOXES ────────────────────────────────────────────────
+const COLORS = [
+  '#00d4ff','#00ff9f','#ff6b35','#ff2255','#ffd700',
+  '#b44fff','#ff77cc','#44aaff','#aaffdd','#ffaa33',
+  '#ff5533','#33ffdd','#ff33aa','#88ff33','#3388ff',
+  '#ffcc00','#cc44ff','#44ffcc','#ff8844','#8844ff'
+];
+
+// ─── LOAD COCO-SSD MODEL ──────────────────────────────────────────────────────
+async function loadModel() {
+  try {
+    // Load both lite and full model for multi-pass detection
+    cocoModel = await cocoSsd.load({ base: 'mobilenet_v2' });
+    document.getElementById('model-spinner').style.display = 'none';
+    document.getElementById('model-status-text').textContent = '✓ COCO-SSD + Claude Vision Hybrid Detector Ready';
+    document.getElementById('model-status-text').style.color = 'var(--accent2)';
+    setModelStatus('active', 'MODEL READY');
+  } catch(e) {
+    document.getElementById('model-status-text').textContent = '✗ Model load failed – check network';
+    document.getElementById('model-status-text').style.color = 'var(--danger)';
+    setModelStatus('warn', 'MODEL ERROR');
+  }
+}
+
+// ─── STATUS HELPERS ──────────────────────────────────────────────────────────
+function setCamStatus(state, label) {
+  const dot = document.getElementById('cam-dot');
+  dot.className = 'dot' + (state === 'active' ? ' active' : state === 'warn' ? ' warn' : '');
+  document.getElementById('cam-label').textContent = label;
+}
+
+function setModelStatus(state, label) {
+  const dot = document.getElementById('model-dot');
+  dot.className = 'dot' + (state === 'active' ? ' active' : state === 'warn' ? ' warn' : '');
+  document.getElementById('model-label').textContent = label;
+}
+
+function setSafetyStatus(state, label) {
+  const dot = document.getElementById('safety-dot');
+  dot.className = 'dot' + (state === 'active' ? ' active' : state === 'warn' ? ' warn' : state === 'danger' ? ' danger' : '');
+  document.getElementById('safety-label').textContent = label;
+}
+
+// ─── CAMERA ──────────────────────────────────────────────────────────────────
+async function startCamera() {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 }, audio: false });
+    video.srcObject = stream;
+    await video.play();
+    
+    document.getElementById('cam-empty').style.display = 'none';
+    video.style.display = 'block';
+    document.getElementById('cam-overlay').style.display = 'flex';
+    document.getElementById('btn-capture').disabled = false;
+    
+    // Size canvas to video
+    video.addEventListener('loadedmetadata', () => {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+    });
+
+    setCamStatus('active', 'CAM LIVE');
+    document.getElementById('cam-action-status').textContent = 'Camera streaming – ready to capture';
+  } catch(e) {
+    alert('Camera access denied or unavailable: ' + e.message);
+  }
+}
+
+function capturePhoto() {
+  if (!stream) return;
+
+  // Draw current video frame to canvas
+  canvas.width = video.videoWidth || video.clientWidth;
+  canvas.height = video.videoHeight || video.clientHeight;
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  capturedImageData = canvas.toDataURL('image/jpeg');
+  
+  // Show captured image
+  const img = document.getElementById('captured-img');
+  img.src = capturedImageData;
+  img.style.display = 'block';
+  video.style.display = 'none';
+
+  // Freeze stream visually (keep stream active for re-capture)
+  document.getElementById('cam-action-status').textContent = 'Photo captured – click DETECT OBJECTS';
+  document.getElementById('btn-detect').disabled = false;
+  document.getElementById('detection-info').textContent = 'FRAME CAPTURED';
+  setCamStatus('warn', 'FRAME CAPTURED');
+
+  // Reset objects
+  detectedObjects = [];
+  renderObjects([]);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  document.getElementById('btn-run').disabled = true;
+}
+
+function resetCamera() {
+  const img = document.getElementById('captured-img');
+  img.style.display = 'none';
+  video.style.display = 'block';
+  capturedImageData = null;
+  detectedObjects = [];
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  renderObjects([]);
+  document.getElementById('btn-detect').disabled = true;
+  document.getElementById('btn-run').disabled = true;
+  document.getElementById('detection-info').textContent = '—';
+  document.getElementById('cam-action-status').textContent = 'Camera ready – capture a new frame';
+  setCamStatus('active', 'CAM LIVE');
+  clearDangerBanner();
+  clearCOT();
+  setSafetyStatus('', 'VERIFIER IDLE');
+}
+
+// ─── OBJECT DETECTION ─────────────────────────────────────────────────────────
+async function detectObjects() {
+  if (!cocoModel) { alert('Model not loaded yet. Please wait.'); return; }
+  if (!capturedImageData) { alert('Please capture a photo first.'); return; }
+
+  document.getElementById('cam-action-status').textContent = '⟳ Pass 1/3: Full-image scan...';
+  document.getElementById('detection-info').textContent = 'PROCESSING...';
+  document.getElementById('btn-detect').disabled = true;
+
+  const img = document.getElementById('captured-img');
+  const W = img.naturalWidth || img.width;
+  const H = img.naturalHeight || img.height;
+  canvas.width = W;
+  canvas.height = H;
+  ctx.clearRect(0, 0, W, H);
+
+  try {
+    // ── PASS 1: Full image, low threshold ──────────────────────────────────
+    const rawFull = await cocoModel.detect(img, 30, 0.18);
+
+    // ── PASS 2: Tile-based detection (9 overlapping tiles) ─────────────────
+    document.getElementById('cam-action-status').textContent = '⟳ Pass 2/3: Tile-scan (9 zones)...';
+    const tileCanvas = document.createElement('canvas');
+    const tileCtx = tileCanvas.getContext('2d');
+    // 3x3 grid with 50% overlap so no object falls between tiles
+    const tiles = [];
+    const cols = 3, rows = 3;
+    const tw = W * 0.55, th = H * 0.55;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const sx = Math.min(c * (W - tw) / (cols - 1), W - tw);
+        const sy = Math.min(r * (H - th) / (rows - 1), H - th);
+        tiles.push({ sx, sy, sw: tw, sh: th, ox: sx, oy: sy });
+      }
+    }
+    let rawTile = [];
+    for (const t of tiles) {
+      tileCanvas.width = Math.round(t.sw);
+      tileCanvas.height = Math.round(t.sh);
+      tileCtx.drawImage(img, t.sx, t.sy, t.sw, t.sh, 0, 0, t.sw, t.sh);
+      const tilePreds = await cocoModel.detect(tileCanvas, 20, 0.20);
+      tilePreds.forEach(p => {
+        rawTile.push({
+          class: p.class,
+          score: p.score,
+          bbox: [p.bbox[0] + t.ox, p.bbox[1] + t.oy, p.bbox[2], p.bbox[3]]
+        });
+      });
+    }
+
+    // ── PASS 3: 2× upscale for small objects ───────────────────────────────
+    document.getElementById('cam-action-status').textContent = '⟳ Pass 3/4: Scale-boost for small objects...';
+    const scaleCanvas = document.createElement('canvas');
+    const scale = 2.0;
+    scaleCanvas.width = Math.round(W * scale);
+    scaleCanvas.height = Math.round(H * scale);
+    scaleCanvas.getContext('2d').drawImage(img, 0, 0, scaleCanvas.width, scaleCanvas.height);
+    const rawScaled = await cocoModel.detect(scaleCanvas, 20, 0.20);
+    const scaledMapped = rawScaled.map(p => ({
+      class: p.class,
+      score: p.score,
+      bbox: [p.bbox[0]/scale, p.bbox[1]/scale, p.bbox[2]/scale, p.bbox[3]/scale]
+    }));
+
+    // ── PASS 4: Contrast-enhanced scan (helps detect bottles, dark objects) ─
+    document.getElementById('cam-action-status').textContent = '⟳ Pass 4/4: Contrast-boost scan for bottles/dark objects...';
+    const enhCanvas = document.createElement('canvas');
+    enhCanvas.width = W;
+    enhCanvas.height = H;
+    const enhCtx = enhCanvas.getContext('2d');
+    enhCtx.filter = 'contrast(160%) brightness(115%) saturate(140%)';
+    enhCtx.drawImage(img, 0, 0, W, H);
+    const rawEnh = await cocoModel.detect(enhCanvas, 20, 0.15);
+    // Also try with different filter for darker objects
+    enhCtx.filter = 'contrast(200%) brightness(140%)';
+    enhCtx.drawImage(img, 0, 0, W, H);
+    const rawEnh2 = await cocoModel.detect(enhCanvas, 20, 0.12);
+    const rawEnhAll = [...rawEnh, ...rawEnh2].map(p => ({
+      class: p.class, score: p.score, bbox: p.bbox
+    }));
+
+    // ── MERGE: strict NMS per class, then remove near-duplicates ───────────
+    document.getElementById('cam-action-status').textContent = '⟳ Merging & deduplicating...';
+    const allRaw = [...rawFull, ...rawTile, ...scaledMapped, ...rawEnhAll];
+    const merged = strictNMS(allRaw);
+
+    // ── CLAUDE VISION (if API key) ─────────────────────────────────────────
+    const apiKey = document.getElementById('api-key').value.trim();
+    let claudeObjects = [];
+    if (apiKey) {
+      document.getElementById('cam-action-status').textContent = '⟳ Claude Vision deep-scan...';
+      claudeObjects = await claudeVisionDetect(capturedImageData, apiKey, merged, W, H);
+    }
+
+    // Combine — deduplicate Claude results against COCO results by class+region
+    const allFinal = deduplicateAgainstExisting(merged, claudeObjects);
+    detectedObjects = allFinal;
+
+    drawDetections(allFinal, W, H);
+    renderObjects(allFinal);   // ← single source of truth
+
+    const total = allFinal.length;
+    document.getElementById('detection-info').textContent = `${total} OBJECT${total !== 1 ? 'S' : ''} DETECTED`;
+    document.getElementById('cam-action-status').textContent = `✓ ${total} unique object(s) found · COCO multi-pass${apiKey ? ' + Claude Vision' : ''}`;
+    document.getElementById('btn-run').disabled = false;
+    document.getElementById('btn-detect').disabled = false;
+    setCamStatus('active', 'DETECTION DONE');
+
+  } catch(e) {
+    console.error(e);
+    document.getElementById('cam-action-status').textContent = '✗ Detection error: ' + e.message;
+    document.getElementById('btn-detect').disabled = false;
+  }
+}
+
+// ─── STRICT NMS: per-class deduplication with tight IoU ──────────────────────
+function strictNMS(preds) {
+  preds.sort((a, b) => b.score - a.score);
+  const kept = [];
+
+  for (const pred of preds) {
+    let drop = false;
+
+    for (const k of kept) {
+      const overlap = iou(k.bbox, pred.bbox);
+
+      // Same class: drop if any significant overlap (IoU > 0.25)
+      if (k.class === pred.class && overlap > 0.25) { drop = true; break; }
+
+      // Cross-class: drop only if almost same box (IoU > 0.80)
+      if (overlap > 0.80) { drop = true; break; }
+
+      // Same class, center-distance check (catches cases where boxes are shifted but same object)
+      if (k.class === pred.class) {
+        const [ax,ay,aw,ah] = k.bbox, [bx,by,bw,bh] = pred.bbox;
+        const dx = (ax+aw/2) - (bx+bw/2), dy = (ay+ah/2) - (by+bh/2);
+        const dist = Math.sqrt(dx*dx + dy*dy);
+        const avgDim = (Math.sqrt(aw*ah) + Math.sqrt(bw*bh)) / 2;
+        if (dist < avgDim * 0.5) { drop = true; break; }  // centers within 50% of avg size
+      }
+    }
+    if (!drop) kept.push(pred);
+  }
+  return kept;
+}
+
+function iou(a, b) {
+  const [ax, ay, aw, ah] = a;
+  const [bx, by, bw, bh] = b;
+  const ix = Math.max(ax, bx), iy = Math.max(ay, by);
+  const ix2 = Math.min(ax+aw, bx+bw), iy2 = Math.min(ay+ah, by+bh);
+  if (ix2 <= ix || iy2 <= iy) return 0;
+  const inter = (ix2-ix)*(iy2-iy);
+  return inter / (aw*ah + bw*bh - inter);
+}
+
+// Remove Claude results that duplicate existing COCO detections
+function deduplicateAgainstExisting(cocoList, claudeList) {
+  const cocoClasses = new Set(cocoList.map(p => p.class.toLowerCase()));
+  const filtered = claudeList.filter(c => {
+    const cl = c.class.toLowerCase();
+    // Drop if exact same class already found by COCO
+    if (cocoClasses.has(cl)) return false;
+    // Drop common mismatches
+    const aliases = { 'mug': 'cup', 'cell phone': 'cell phone', 'monitor': 'tv' };
+    if (aliases[cl] && cocoClasses.has(aliases[cl])) return false;
+    return true;
+  });
+  return [...cocoList, ...filtered];
+}
+
+// ─── CLAUDE VISION DETECTION ──────────────────────────────────────────────────
+async function claudeVisionDetect(imageDataUrl, apiKey, existingPreds, W, H) {
+  const existing = existingPreds.map(p => p.class).join(', ');
+  const base64 = imageDataUrl.split(',')[1];
+
+  const systemPrompt = `You are a meticulous computer vision labeler. 
+Analyze the image carefully and list EVERY distinct visible object.
+Already detected (skip these): ${existing || 'none'}.
+
+Respond ONLY with a valid JSON array. No other text. No markdown.
+Each object: {
+  "class": "object name in lowercase",
+  "confidence": 0.0-1.0,
+  "x_pct": center x as 0.0-1.0 fraction of image width,
+  "y_pct": center y as 0.0-1.0 fraction of image height,
+  "w_pct": width as 0.0-1.0 fraction of image width,
+  "h_pct": height as 0.0-1.0 fraction of image height
+}
+
+Be exhaustive. Specifically look for: bottles, mugs/cups, mobile phones/smartphones, bags/handbags, mirrors, tables, chairs, beds, windows, doors, lamps, shelves, cables/wires, clothing items, food items, remote controls, books, plants. 
+Include partially visible objects. Minimum confidence: 0.45.`;
+
+  try {
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 1200,
+        system: systemPrompt,
+        messages: [{
+          role: 'user',
+          content: [{
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/jpeg', data: base64 }
+          }, {
+            type: 'text',
+            text: 'List every visible object as a JSON array with pixel-fraction coordinates.'
+          }]
+        }]
+      })
+    });
+
+    if (!resp.ok) {
+      console.warn('Claude Vision API error:', resp.status);
+      return [];
+    }
+    const data = await resp.json();
+    const text = data.content?.[0]?.text || '';
+
+    // Parse JSON from response
+    const jsonMatch = text.match(/\[[\s\S]*?\]/);
+    if (!jsonMatch) return [];
+
+    const items = JSON.parse(jsonMatch[0]);
+    return items
+      .filter(it => it && it.confidence >= 0.45 && it.class)
+      .map(it => {
+        const cx = (it.x_pct || 0.5) * W;
+        const cy = (it.y_pct || 0.5) * H;
+        const bw = (it.w_pct || 0.2) * W;
+        const bh = (it.h_pct || 0.2) * H;
+        return {
+          class: String(it.class).toLowerCase().trim(),
+          score: Number(it.confidence) || 0.5,
+          bbox: [
+            Math.max(0, cx - bw/2),
+            Math.max(0, cy - bh/2),
+            Math.min(bw, W),
+            Math.min(bh, H)
+          ],
+          source: 'claude-vision'
+        };
+      });
+  } catch(e) {
+    console.warn('Claude Vision detect failed:', e);
+    return [];
+  }
+}
+
+// ─── DRAW DETECTIONS ON CANVAS ────────────────────────────────────────────────
+function drawDetections(predictions, W, H) {
+  ctx.clearRect(0, 0, W, H);
+
+  predictions.forEach((pred, i) => {
+    const color = COLORS[i % COLORS.length];
+    const isClaudeOnly = pred.source === 'claude-vision';
+    const [x, y, w, h] = pred.bbox;
+    const cx = x + w / 2;
+    const cy = y + h / 2;
+    const r = Math.max(Math.sqrt(w * w + h * h) / 2, 30);
+
+    // Outer circle
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, 2 * Math.PI);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = isClaudeOnly ? 2 : 3;
+    ctx.setLineDash(isClaudeOnly ? [8, 4] : []);
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 15;
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Inner fill
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, 2 * Math.PI);
+    ctx.fillStyle = hexToRgba(color, 0.07);
+    ctx.fill();
+
+    // Small inner ring
+    ctx.beginPath();
+    ctx.arc(cx, cy, 10, 0, 2 * Math.PI);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.shadowBlur = 8;
+    ctx.stroke();
+
+    // Center dot
+    ctx.beginPath();
+    ctx.arc(cx, cy, 4, 0, 2 * Math.PI);
+    ctx.fillStyle = color;
+    ctx.shadowBlur = 0;
+    ctx.fill();
+
+    // Crosshair lines
+    ctx.beginPath();
+    ctx.moveTo(cx - 18, cy); ctx.lineTo(cx - 8, cy);
+    ctx.moveTo(cx + 8, cy); ctx.lineTo(cx + 18, cy);
+    ctx.moveTo(cx, cy - 18); ctx.lineTo(cx, cy - 8);
+    ctx.moveTo(cx, cy + 8); ctx.lineTo(cx, cy + 18);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Label pill background
+    const label = `${pred.class.toUpperCase()}  ${Math.round(pred.score * 100)}%${isClaudeOnly ? ' ◆' : ''}`;
+    ctx.font = 'bold 13px Share Tech Mono, monospace';
+    const tw = ctx.measureText(label).width;
+    const lx = Math.min(cx - tw/2, W - tw - 10);
+    const ly = y > 30 ? y - 10 : y + h + 22;
+
+    ctx.fillStyle = hexToRgba('#050a12', 0.85);
+    ctx.beginPath();
+    ctx.roundRect(lx - 6, ly - 14, tw + 12, 20, 3);
+    ctx.fill();
+
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 6;
+    ctx.fillStyle = color;
+    ctx.fillText(label, lx, ly);
+    ctx.shadowBlur = 0;
+  });
+}
+
+function hexToRgba(hex, alpha) {
+  const r = parseInt(hex.slice(1,3),16);
+  const g = parseInt(hex.slice(3,5),16);
+  const b = parseInt(hex.slice(5,7),16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+// ─── RENDER OBJECT LIST ───────────────────────────────────────────────────────
+function renderObjects(predictions) {
+  const panel = document.getElementById('objects-panel');
+  const countEl = document.getElementById('obj-count');
+  
+  // Always fully rebuild
+  panel.innerHTML = '';
+  countEl.textContent = `${predictions.length} OBJECT${predictions.length !== 1 ? 'S' : ''}`;
+
+  if (!predictions || predictions.length === 0) {
+    panel.innerHTML = `
+      <div class="empty-state" id="obj-empty">
+        <div class="empty-icon">🔎</div>
+        <div>NO OBJECTS DETECTED</div>
+        <div style="font-size:10px;margin-top:4px;">Capture image and run detection</div>
+      </div>`;
+    return;
+  }
+
+  // Sort by confidence desc for cleaner list
+  const sorted = [...predictions].sort((a, b) => b.score - a.score);
+
+  sorted.forEach((pred, i) => {
+    const color = COLORS[i % COLORS.length];
+    const isVision = pred.source === 'claude-vision';
+    const confPct = Math.round(pred.score * 100);
+    const name = String(pred.class).charAt(0).toUpperCase() + String(pred.class).slice(1);
+
+    const div = document.createElement('div');
+    div.className = 'obj-item';
+    div.style.cssText = `
+      display:flex; align-items:center; gap:9px;
+      padding:7px 11px;
+      background:rgba(11,21,36,0.8);
+      border:1px solid ${color}44;
+      border-left:3px solid ${color};
+      border-radius:4px;
+      animation:slideIn 0.25s ease;
+    `;
+    div.innerHTML = `
+      <div style="width:8px;height:8px;border-radius:50%;background:${color};box-shadow:0 0 7px ${color};flex-shrink:0;"></div>
+      <span style="flex:1;font-weight:600;font-size:13px;color:#c8e0f0;">${name}</span>
+      ${isVision ? `<span style="font-size:9px;padding:1px 5px;background:rgba(0,255,159,0.1);border:1px solid #00ff9f88;border-radius:2px;color:#00ff9f;font-family:'Share Tech Mono',monospace;">CV◆</span>` : ''}
+      <span style="font-family:'Share Tech Mono',monospace;font-size:11px;color:#4a6a8a;">${confPct}%</span>
+      <div style="width:36px;height:4px;background:#1a3a5c;border-radius:2px;overflow:hidden;">
+        <div style="width:${confPct}%;height:100%;background:${color};transition:width 0.4s;"></div>
+      </div>
+    `;
+    panel.appendChild(div);
+  });
+}
+
+// ─── SCENARIO PRESETS ─────────────────────────────────────────────────────────
+const SCENARIOS = {
+  1: 'take the knife and cut the apple',
+  2: 'pick up the bottle',
+  3: 'cut the hand using knife'
+};
+function setScenario(n) {
+  document.getElementById('prompt-input').value = SCENARIOS[n];
+}
+
+// ─── SAFETY RULES ─────────────────────────────────────────────────────────────
+const HARM_PATTERNS = [
+  { pattern: /cut.*hand|stab.*person|harm.*human|hurt.*person|attack.*person|cut.*finger|injur|kill/i, label: 'PHYSICAL HARM TO HUMAN' },
+  { pattern: /self.harm|hurt (me|myself|yourself)/i, label: 'SELF-HARM INTENT' },
+  { pattern: /detonate|explode|shoot/i, label: 'DANGEROUS WEAPON MISUSE' },
+];
+
+const DANGEROUS_COMBOS = [
+  { objects: ['knife', 'scissors', 'sword'], bodyParts: ['person', 'hand', 'arm', 'face'], label: 'SHARP OBJECT + HUMAN DETECTED' },
+];
+
+function safetyCheck(prompt, objects) {
+  const objNames = objects.map(o => o.class.toLowerCase());
+  
+  // Check prompt against harm patterns
+  for (const rule of HARM_PATTERNS) {
+    if (rule.pattern.test(prompt)) {
+      return { safe: false, reason: rule.label, type: 'harm_prompt' };
+    }
+  }
+  
+  // Check dangerous object + human combinations in scene
+  for (const combo of DANGEROUS_COMBOS) {
+    const hasWeapon = combo.objects.some(w => objNames.some(o => o.includes(w)));
+    const hasHuman = combo.bodyParts.some(b => objNames.some(o => o.includes(b)));
+    if (hasWeapon && hasHuman) {
+      // Extra check: prompt must reference weapon action toward human
+      if (/cut|stab|slice|harm|hit|attack|use.*knife|use.*scissor/i.test(prompt) &&
+          /hand|person|human|arm|body/i.test(prompt)) {
+        return { safe: false, reason: combo.label, type: 'dangerous_combo' };
+      }
+    }
+  }
+  
+  return { safe: true };
+}
+
+function hallucinationCheck(prompt, objects) {
+  const objNames = objects.map(o => o.class.toLowerCase());
+  
+  // Extract noun mentions from prompt
+  const commonObjects = [
+    'bottle', 'cup', 'apple', 'orange', 'knife', 'fork', 'spoon', 'book',
+    'phone', 'laptop', 'chair', 'table', 'ball', 'pen', 'scissors',
+    'glass', 'bowl', 'plate', 'banana', 'sandwich', 'mouse', 'keyboard',
+    'remote', 'clock', 'vase', 'teddy bear', 'box', 'bag', 'key'
+  ];
+  
+  const mentioned = commonObjects.filter(obj => new RegExp(`\\b${obj}\\b`, 'i').test(prompt));
+  const missing = mentioned.filter(obj => !objNames.some(o => o.includes(obj)));
+  
+  return { missing, mentioned };
+}
+
+// ─── RUN CHAIN-OF-THOUGHT ─────────────────────────────────────────────────────
+async function runCOT() {
+  const prompt = document.getElementById('prompt-input').value.trim();
+  if (!prompt) { alert('Please enter a command.'); return; }
+  if (detectedObjects.length === 0) { alert('Please detect objects first.'); return; }
+
+  clearCOT();
+  clearDangerBanner();
+  document.getElementById('btn-run').disabled = true;
+  setSafetyStatus('active', 'VERIFYING...');
+
+  const objects = detectedObjects;
+  const objNames = objects.map(o => o.class);
+
+  // Step 1: Scene analysis
+  addCOT('info', '1', `SCENE ANALYSIS: ${objects.length} object(s) detected in visual field.`);
+  await delay(300);
+  addCOT('info', '2', `INVENTORY: [ ${objNames.map(o=>o.toUpperCase()).join(' · ')} ]`);
+  await delay(400);
+
+  // Step 2: Safety check
+  addCOTDivider();
+  addCOT('info', '3', `SAFETY VERIFIER → Parsing command for potential harm vectors...`);
+  await delay(500);
+
+  const safety = safetyCheck(prompt, objects);
+  
+  if (!safety.safe) {
+    addCOT('danger', '4', `⚠ SAFETY VIOLATION: ${safety.reason}`);
+    await delay(300);
+    addCOT('danger', '5', `ACTION BLOCKED. The requested operation involves potential physical harm to a human or unsafe weapon usage.`);
+    await delay(300);
+    addCOTBlock('halt', '⛔ ACTION EXECUTION HALTED — SAFETY POLICY VIOLATION');
+    
+    showDangerBanner();
+    setSafetyStatus('danger', 'SAFETY BLOCK');
+    document.getElementById('btn-run').disabled = false;
+    return;
+  }
+  
+  addCOT('safe', '4', `SAFETY CHECK PASSED ✓ — No direct harm patterns detected.`);
+  await delay(400);
+
+  // Step 3: Hallucination check
+  addCOTDivider();
+  addCOT('info', '5', `GROUNDING VERIFIER → Cross-referencing command objects with scene inventory...`);
+  await delay(500);
+
+  const hall = hallucinationCheck(prompt, objects);
+  
+  if (hall.missing.length > 0) {
+    addCOT('warn', '6', `HALLUCINATION DETECTED: Object(s) [ ${hall.missing.map(o=>o.toUpperCase()).join(', ')} ] referenced in command but NOT present in scene.`);
+    await delay(300);
+    addCOT('warn', '7', `GROUNDING FAILURE: Cannot execute action on objects not in visual field. This violates the Reality Grounding Principle in safe VLA policy.`);
+    await delay(300);
+    addCOT('warn', '8', `DECISION: Reject action to prevent hallucination-driven robot behavior. Possible cause: stale world model or incorrect user assumption.`);
+    await delay(300);
+    addCOTBlock('halt', `⚠ ACTION REJECTED — OBJECTS NOT GROUNDED IN SCENE: [ ${hall.missing.join(', ').toUpperCase()} ]`);
+    setSafetyStatus('warn', 'HALLUCINATION BLOCK');
+    document.getElementById('btn-run').disabled = false;
+    return;
+  }
+  
+  addCOT('safe', '6', `GROUNDING CHECK PASSED ✓ — All referenced objects confirmed in scene.`);
+  await delay(400);
+
+  // Step 4: LLM CoT generation
+  addCOTDivider();
+  addCOT('info', '7', `LLM REASONING ENGINE → Generating action plan...`);
+  
+  const apiKey = document.getElementById('api-key').value.trim();
+  
+  if (apiKey) {
+    await llmCoT(prompt, objNames, apiKey);
+  } else {
+    await demoCoT(prompt, objNames);
+  }
+
+  setSafetyStatus('active', 'PLAN READY');
+  document.getElementById('btn-run').disabled = false;
+}
+
+// ─── LLM CHAIN OF THOUGHT ─────────────────────────────────────────────────────
+async function llmCoT(prompt, objects, apiKey) {
+  const systemPrompt = `You are a VLA (Vision-Language-Action) robot reasoning engine. 
+Your task is to generate a detailed, safe Chain-of-Thought action plan for a robot.
+The user has given a command. Objects in the scene have been visually confirmed.
+Output a numbered step-by-step reasoning in clear, short sentences. 
+Start with precondition verification, then action steps, then completion check.
+Maximum 10 steps. Be specific and robotics-focused (grip, reach, force, etc.).
+Format: plain numbered steps only.`;
+
+  const userMsg = `Scene objects: ${objects.join(', ')}
+Command: "${prompt}"
+Generate the robot action plan:`;
+
+  showTyping();
+
+  try {
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 600,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userMsg }]
+      })
+    });
+
+    hideTyping();
+    
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      addCOT('warn', '!', `API Error: ${err.error?.message || resp.statusText}. Falling back to demo mode.`);
+      await demoCoT(prompt, objects, 8);
+      return;
+    }
+
+    const data = await resp.json();
+    const text = data.content?.[0]?.text || '';
+    const lines = text.split('\n').filter(l => l.trim());
+    
+    let stepNum = 8;
+    for (const line of lines) {
+      const clean = line.replace(/^\d+[\.\)]\s*/, '').trim();
+      if (clean) {
+        addCOT('safe', stepNum++, clean);
+        await delay(200);
+      }
+    }
+    addCOTBlock('success', '✓ ACTION PLAN GENERATED — READY FOR EXECUTION');
+    
+  } catch(e) {
+    hideTyping();
+    addCOT('warn', '!', `Network error: ${e.message}. Falling back to demo mode.`);
+    await demoCoT(prompt, objects, 8);
+  }
+}
+
+// ─── DEMO COT (no API key) ────────────────────────────────────────────────────
+async function demoCoT(prompt, objects, startStep = 8) {
+  hideTyping();
+  showTyping();
+  await delay(800);
+  hideTyping();
+
+  // Generic robot action CoT based on prompt keywords
+  const steps = generateDemoSteps(prompt, objects);
+  let n = startStep;
+  for (const s of steps) {
+    addCOT('safe', n++, s);
+    await delay(280);
+  }
+  addCOTBlock('success', '✓ ACTION PLAN GENERATED — READY FOR EXECUTION');
+}
+
+function generateDemoSteps(prompt, objects) {
+  const p = prompt.toLowerCase();
+  const steps = [];
+
+  // Generic pre-conditions
+  steps.push(`PRECONDITION CHECK: Verify robot arm is in neutral home position.`);
+  steps.push(`SPATIAL MAPPING: Compute 3D coordinates of target object(s) using depth camera fusion.`);
+
+  if (/pick|grab|take|lift|get/.test(p)) {
+    const obj = objects.find(o => p.includes(o.toLowerCase())) || objects[0];
+    steps.push(`APPROACH: Navigate end-effector toward [ ${obj} ] at 0.3 m/s with collision avoidance active.`);
+    steps.push(`GRASP PLANNING: Select parallel-jaw grasp on longest axis of object. Grip force: 12N.`);
+    steps.push(`EXECUTE GRASP: Close gripper. Verify contact via tactile sensors.`);
+    steps.push(`LIFT: Raise object 0.15m above surface. Check for unexpected drag.`);
+    steps.push(`VERIFY: Confirm object is securely held. No slippage detected.`);
+  }
+
+  if (/cut|slice/.test(p)) {
+    steps.push(`GRASP TOOL: Locate and grasp knife handle with firm grip (18N). Ensure blade orientation is safe.`);
+    steps.push(`POSITION TARGET: Place target object on stable surface. Verify no obstruction in cutting path.`);
+    steps.push(`APPROACH CUT ZONE: Move blade above target at 0.05 m/s. Final alignment check.`);
+    steps.push(`EXECUTE CUT: Apply downward force (8N) along cutting axis. Monitor force feedback continuously.`);
+    steps.push(`RETRACT TOOL: Lift knife blade clear of surface. Return to safe hold position.`);
+  }
+
+  if (/place|put|set/.test(p)) {
+    steps.push(`DESTINATION SCAN: Identify target placement zone. Check surface stability.`);
+    steps.push(`TRANSPORT: Move held object to target location at 0.2 m/s.`);
+    steps.push(`PLACE: Lower object until surface contact. Release grip with 2N residual force.`);
+    steps.push(`VERIFY PLACEMENT: Confirm object is stable. Retract to neutral position.`);
+  }
+
+  steps.push(`TASK COMPLETE: Log action in episodic memory. Return to standby posture.`);
+  return steps;
+}
+
+// ─── COT HELPERS ─────────────────────────────────────────────────────────────
+let typingEl = null;
+
+function addCOT(type, num, text) {
+  const body = document.getElementById('cot-body');
+  const div = document.createElement('div');
+  div.className = 'cot-step';
+  div.innerHTML = `
+    <span class="cot-num">[${num}]</span>
+    <span class="cot-text cot-${type}">${text}</span>
+  `;
+  body.appendChild(div);
+  body.scrollTop = body.scrollHeight;
+}
+
+function addCOTBlock(type, text) {
+  const body = document.getElementById('cot-body');
+  const div = document.createElement('div');
+  div.className = `cot-${type}`;
+  div.style.animation = 'fadeUp 0.4s ease';
+  div.textContent = text;
+  body.appendChild(div);
+  body.scrollTop = body.scrollHeight;
+}
+
+function addCOTDivider() {
+  const body = document.getElementById('cot-body');
+  const div = document.createElement('div');
+  div.className = 'cot-divider';
+  body.appendChild(div);
+}
+
+function showTyping() {
+  const body = document.getElementById('cot-body');
+  typingEl = document.createElement('div');
+  typingEl.className = 'typing-indicator';
+  typingEl.innerHTML = `<span style="color:var(--dim);font-size:11px;font-family:'Share Tech Mono',monospace;">LLM reasoning</span><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div>`;
+  body.appendChild(typingEl);
+  body.scrollTop = body.scrollHeight;
+}
+
+function hideTyping() {
+  if (typingEl) { typingEl.remove(); typingEl = null; }
+}
+
+function clearCOT() {
+  const body = document.getElementById('cot-body');
+  body.innerHTML = '';
+}
+
+function showDangerBanner() {
+  document.getElementById('danger-banner').style.display = 'block';
+}
+function clearDangerBanner() {
+  document.getElementById('danger-banner').style.display = 'none';
+}
+
+function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ─── INIT ─────────────────────────────────────────────────────────────────────
+loadModel();
+</script>
+</body>
+</html>
