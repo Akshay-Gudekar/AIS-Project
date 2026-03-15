@@ -1,15 +1,17 @@
 """
-detector.py - Robust Multi-pass Object Detection using Faster R-CNN (MobileNet V3)
+detector.py - Robust Object Detection using Faster R-CNN (MobileNet V3)
 on COCO dataset with strong false-positive filtering.
 
-Pipeline:
-  Pass 1: Full-image scan (high-confidence anchors)
-  Pass 2: Tile-based detection (9 overlapping zones for missed objects)
-  Pass 3: 2x upscale for small objects
-  Pass 4: Contrast-enhanced scan for dark / low-visibility objects
-  + Cross-pass confidence voting (require multi-pass agreement for low scores)
-  + Strict NMS deduplication
-  + Post-processing filters (min area, aspect ratio, edge clipping, score floor)
+Pipeline (precision-first, false-positive minimised):
+  Pass 1: Full-image scan (high confidence, threshold 0.65)
+  Pass 2: 4-tile scan (2×2 quadrant grid, threshold 0.60)
+  Pass 3: 2x upscale for small objects (threshold 0.65)
+  Pass 4: Mild contrast-enhanced scan (threshold 0.60, single variant)
+  + Cross-pass confidence voting — low-score detections require ≥2 pass agreement
+    and tight IoU (0.40) before being kept
+  + Strict NMS deduplication (same-class IoU 0.20, cross-class IoU 0.50)
+  + Post-processing filters (min area 0.3%, aspect ratio ≤6:1, edge penalty)
+  + Final score floor 0.55 — anything below is discarded
 """
 
 import torch
@@ -24,35 +26,40 @@ import threading
 
 # ─── TUNING PARAMETERS ────────────────────────────────────────────────────────
 # Single-pass detection thresholds (model raw score gate)
-PASS1_THRESHOLD = 0.40       # Full-image pass — primary anchor pass, keep reasonably high
-PASS2_THRESHOLD = 0.40       # Tile pass
-PASS3_THRESHOLD = 0.40       # Upscale pass
-PASS4A_THRESHOLD = 0.35      # Contrast-enhanced pass A
-PASS4B_THRESHOLD = 0.30      # Contrast-enhanced pass B (more aggressive enhancement)
+# Raised high to reduce false positives — only confident detections survive
+PASS1_THRESHOLD = 0.65       # Full-image pass — primary, high confidence required
+PASS2_THRESHOLD = 0.60       # Tile pass (4 tiles, 2×2 grid)
+PASS3_THRESHOLD = 0.65       # Upscale pass
+PASS4A_THRESHOLD = 0.60      # Contrast-enhanced pass A (only variant kept)
+# PASS4B removed — 0.30 threshold generated far too many false positives
 
 # Post-merge confidence floor: any detection below this is dropped
-FINAL_SCORE_FLOOR = 0.35
+FINAL_SCORE_FLOOR = 0.55     # Raised from 0.35 — hard cutoff for marginal detections
 
 # Cross-pass voting: detections seen in only 1 pass must exceed this score
-SINGLE_PASS_MIN_SCORE = 0.55
+SINGLE_PASS_MIN_SCORE = 0.72  # Raised from 0.55 — single-pass must be very confident
 
 # Minimum bounding-box area as fraction of image area (filters tiny noise)
-MIN_AREA_FRACTION = 0.0008   # 0.08 % of image
+MIN_AREA_FRACTION = 0.003    # 0.3 % of image — raised to cut micro-noise boxes
 
 # Maximum bounding-box area as fraction of image area (filters full-frame ghosts)
-MAX_AREA_FRACTION = 0.85     # 85 % of image
+MAX_AREA_FRACTION = 0.80     # 80 % of image
 
-# Aspect ratio limits — reject boxes thinner than 1:8 or wider than 8:1
-MAX_ASPECT_RATIO = 8.0
+# Aspect ratio limits — reject boxes thinner than 1:6 or wider than 6:1 (tighter)
+MAX_ASPECT_RATIO = 6.0
 
 # Edge-margin: boxes whose center is within this fraction of image edge are
 # penalised (lowered score) because edge crops produce many false positives
-EDGE_MARGIN_FRACTION = 0.04  # 4 % from each edge
+EDGE_MARGIN_FRACTION = 0.07  # 7 % from each edge (raised from 4 %)
 
-# NMS IoU thresholds
-NMS_SAME_CLASS_IOU = 0.30    # Same class overlap to suppress
-NMS_CROSS_CLASS_IOU = 0.70   # Different class overlap to suppress
-NMS_CENTER_DIST_RATIO = 0.45 # Center-distance / avg-dim ratio for same-class suppression
+# NMS IoU thresholds — tightened to suppress near-duplicate detections
+NMS_SAME_CLASS_IOU = 0.20    # Same class: suppress if > 20 % overlap (was 0.30)
+NMS_CROSS_CLASS_IOU = 0.50   # Cross-class: suppress if > 50 % overlap (was 0.70)
+NMS_CENTER_DIST_RATIO = 0.40 # Center-distance ratio for same-class suppression
+
+# Cross-pass IoU needed to count a detection from another pass as confirmation
+# Raised so only genuinely matching boxes confirm each other
+CROSS_PASS_CONFIRM_IOU = 0.40  # was hard-coded 0.20 in _cross_pass_vote
 
 
 # COCO 91-class label map used by torchvision detection models
@@ -215,7 +222,7 @@ class ObjectDetector:
         it is dropped.
         """
         # Build a quick spatial index: for each prediction, count how many passes
-        # produced a similar detection (same class, IoU > 0.20 with any other pass)
+        # produced a similar detection (same class, IoU > CROSS_PASS_CONFIRM_IOU)
         for i, p in enumerate(all_preds_with_pass):
             confirming_passes = set()
             confirming_passes.add(p['_pass'])
@@ -226,7 +233,7 @@ class ObjectDetector:
                     continue
                 if q['_pass'] == p['_pass']:
                     continue
-                if ObjectDetector._iou(p['bbox'], q['bbox']) > 0.20:
+                if ObjectDetector._iou(p['bbox'], q['bbox']) > CROSS_PASS_CONFIRM_IOU:
                     confirming_passes.add(q['_pass'])
             p['_num_passes'] = len(confirming_passes)
 
@@ -270,10 +277,11 @@ class ObjectDetector:
         for p in raw_full:
             p['_pass'] = 1
 
-        # ── PASS 2: Tile-based detection (9 overlapping tiles, 3x3 grid) ──────
+        # ── PASS 2: Tile-based detection (4 tiles, 2×2 grid, 60 % overlap) ──────
+        # Reduced from 9 tiles to 4 quadrant tiles to limit false-positive bleed
         raw_tile = []
-        cols, rows = 3, 3
-        tw, th = int(W * 0.55), int(H * 0.55)
+        cols, rows = 2, 2
+        tw, th = int(W * 0.60), int(H * 0.60)   # slight overlap so objects on seams are caught
         for r in range(rows):
             for c in range(cols):
                 sx = min(int(c * (W - tw) / max(cols - 1, 1)), W - tw)
@@ -310,23 +318,18 @@ class ObjectDetector:
                 '_pass': 3
             })
 
-        # ── PASS 4: Contrast-enhanced scan ─────────────────────────────────────
-        # 4A: contrast(160%) brightness(115%) color(140%)
-        enh1 = ImageEnhance.Contrast(pil_image).enhance(1.6)
-        enh1 = ImageEnhance.Brightness(enh1).enhance(1.15)
-        enh1 = ImageEnhance.Color(enh1).enhance(1.4)
+        # ── PASS 4: Contrast-enhanced scan (single variant) ───────────────────
+        # Mild enhancement only — heavy enhancement (Pass 4B) removed because
+        # extreme contrast changes produce artefacts the model misclassifies.
+        # contrast(140%) brightness(110%) color(130%) — conservative
+        enh1 = ImageEnhance.Contrast(pil_image).enhance(1.4)
+        enh1 = ImageEnhance.Brightness(enh1).enhance(1.10)
+        enh1 = ImageEnhance.Color(enh1).enhance(1.3)
         raw_enh1 = self._detect_single(enh1, threshold=PASS4A_THRESHOLD)
         for p in raw_enh1:
             p['_pass'] = 4
 
-        # 4B: contrast(200%) brightness(140%) for darker objects
-        enh2 = ImageEnhance.Contrast(pil_image).enhance(2.0)
-        enh2 = ImageEnhance.Brightness(enh2).enhance(1.4)
-        raw_enh2 = self._detect_single(enh2, threshold=PASS4B_THRESHOLD)
-        for p in raw_enh2:
-            p['_pass'] = 4
-
-        raw_enh_all = raw_enh1 + raw_enh2
+        raw_enh_all = raw_enh1   # only one contrast variant
 
         # ── CROSS-PASS VOTING ──────────────────────────────────────────────────
         # Gather all raw detections and require multi-pass agreement for low scores
