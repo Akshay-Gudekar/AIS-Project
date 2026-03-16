@@ -14,8 +14,8 @@ A lightweight **Vision–Language–Action (VLA)** safety verification system th
 - [Installation](#installation)
 - [Usage](#usage)
 - [API Reference](#api-reference)
-- [Safety Verification Pipeline](#safety-verification-pipeline)
-- [Object Detection Pipeline](#object-detection-pipeline)
+- [Verification & Detection Pipeline](#verification--detection-pipeline)
+- [Case Studies](#case-studies)
 - [Chain-of-Thought Engine](#chain-of-thought-engine)
 - [Configuration & Tuning](#configuration--tuning)
 
@@ -42,7 +42,7 @@ This project implements a **CoT Safety Verifier** that sits between the operator
 
 | Feature | Description |
 |---------|-------------|
-| **Multi-Pass Object Detection** | 4-pass detection pipeline (full image, tiled, upscaled, contrast-enhanced) using Faster R-CNN MobileNet V3 trained on 80 COCO classes |
+| **Multi-Pass Object Detection** | 5-pass detection pipeline (full image, tiled, upscaled, contrast-enhanced ×2) using Faster R-CNN MobileNet V3 Large FPN trained on 80 COCO classes |
 | **Cross-Pass Voting** | Low-confidence detections must be confirmed by ≥ 2 passes to survive filtering |
 | **Strict NMS** | Same-class IoU, cross-class IoU, and center-distance suppression to eliminate duplicates |
 | **Geometry Filters** | Area bounds, aspect ratio limits, and edge-margin penalties remove false positives |
@@ -58,41 +58,11 @@ This project implements a **CoT Safety Verifier** that sits between the operator
 
 ## System Architecture
 
-```
-┌──────────────────────────────────────────────────────────┐
-│                    Browser Frontend                       │
-│  ┌──────────┐  ┌──────────────┐  ┌────────────────────┐  │
-│  │  Camera   │  │ Object List  │  │  CoT Output Panel  │  │
-│  │  Feed +   │  │ (detected    │  │  (safety status,   │  │
-│  │  Canvas   │  │  objects)    │  │   action phases)   │  │
-│  └─────┬────┘  └──────┬───────┘  └─────────┬──────────┘  │
-│        │               │                    │             │
-│        └───────────────┼────────────────────┘             │
-│                        │ REST API (JSON)                  │
-└────────────────────────┼──────────────────────────────────┘
-                         │
-                         ▼
-┌────────────────────────────────────────────────────────────┐
-│                  Flask Backend (Python)                     │
-│                                                            │
-│  ┌─────────────┐  ┌──────────────┐  ┌──────────────────┐  │
-│  │ detector.py  │  │  safety.py   │  │  cot_engine.py   │  │
-│  │             │  │              │  │                  │  │
-│  │ Faster RCNN │  │ Harm Pattern │  │ Demo CoT         │  │
-│  │ MobileNetV3 │  │ Matching     │  │ (phase-based)    │  │
-│  │ Multi-Pass  │  │              │  │                  │  │
-│  │ Detection   │  │ Dangerous    │  │ LLM CoT          │  │
-│  │             │  │ Combo Check  │  │ (Claude API)     │  │
-│  │ Cross-Pass  │  │              │  │                  │  │
-│  │ Voting +    │  │ Hallucination│  │ Claude Vision    │  │
-│  │ Strict NMS  │  │ Grounding    │  │ Detection        │  │
-│  └─────────────┘  └──────────────┘  └──────────────────┘  │
-│                                                            │
-│                     app.py (Flask Server)                   │
-│              Routes: / , /api/status, /api/detect,         │
-│                          /api/verify                       │
-└────────────────────────────────────────────────────────────┘
-```
+The diagram below shows the Lightweight Verifier (LV) framework — three parallel verification modules whose scores are fused into a single verdict before any robot command is issued.
+
+![LV Architecture](fig1_lv_architecture.png)
+
+> **Fig. 1** — Lightweight Verifier architecture. The Rule-Based, Neural, and Symbolic modules run in parallel. Their scores are fused by the Decision Fusion Layer and routed to Accept, Clarify, or Reject.
 
 ---
 
@@ -121,10 +91,10 @@ AIS-Project/
 | File | Lines | Purpose |
 |------|-------|---------|
 | `app.py` | ~274 | Flask web server with 4 routes. Orchestrates detection → safety check → hallucination check → CoT generation pipeline. |
-| `detector.py` | ~409 | `ObjectDetector` class implementing 4-pass detection, cross-pass voting, strict NMS, and geometry-based post-processing filters. |
+| `detector.py` | ~409 | `ObjectDetector` class implementing 5-pass detection, cross-pass voting, strict NMS, and geometry-based post-processing filters. |
 | `safety.py` | ~108 | `safety_check()` for harm pattern matching & dangerous combos; `hallucination_check()` for grounding verification. |
 | `cot_engine.py` | ~388 | Phase-based demo CoT generator for 6 action types. Optional Claude API integration for LLM CoT and hybrid vision detection. |
-| `templates/index.html` | ~1191 | Full frontend with camera feed, object list panel, CoT output panel, and API key input. Uses Exo 2 + Share Tech Mono fonts. |
+| `templates/index.html` | ~1191 | Full frontend with camera feed, object list panel, CoT output panel, and API key input. |
 
 ---
 
@@ -156,18 +126,16 @@ AIS-Project/
 git clone <repository-url>
 cd AIS-Project
 
-# 2. (Recommended) Create and activate a virtual environment
+# 2. Create and activate a virtual environment (recommended)
 python -m venv .venv
-# Windows
-.venv\Scripts\activate
-# macOS/Linux
-source .venv/bin/activate
+# Windows:  .venv\Scripts\activate
+# macOS/Linux:  source .venv/bin/activate
 
 # 3. Install dependencies
 pip install -r requirements.txt
 ```
 
-> **Note:** The first run will download the Faster R-CNN MobileNet V3 model weights (~60 MB) automatically from PyTorch Hub.
+> **Note:** The first run will download the Faster R-CNN MobileNet V3 Large FPN model weights (~60 MB) automatically from PyTorch Hub.
 
 ---
 
@@ -179,40 +147,26 @@ pip install -r requirements.txt
 python app.py
 ```
 
-The server starts at `http://localhost:5000`. The console will show:
+The server starts at `http://localhost:5000`. Open it in Chrome or Edge and follow these steps:
 
-```
-============================================================
-  VLA-4 :: CoT Safety Verifier — Python Backend
-  Loading Faster R-CNN MobileNet V3 (COCO) model...
-============================================================
-[detector] ✓ Faster R-CNN MobileNet V3 (COCO) loaded successfully
-[detector]   Device: cpu
-```
-
-### Using the Web Interface
-
-1. **Open** `http://localhost:5000` in a modern browser (Chrome/Edge recommended).
-2. **Start Camera** — click the button to enable the webcam feed.
-3. **Capture** — freeze a frame from the live video.
-4. **Detect Objects** — runs the multi-pass detection pipeline on the captured image.
-5. **Enter a Command** — type a robot action command (e.g., `take the knife and cut the apple`).
-6. **Run CoT** — submits the command for safety verification and CoT generation.
+1. **Start Camera** — click the button to enable the webcam feed.
+2. **Capture** — freeze a frame from the live video.
+3. **Detect Objects** — runs the multi-pass detection pipeline on the captured image.
+4. **Enter a Command** — type a robot action command.
+5. **Run CoT** — submits the command for safety verification and plan generation.
 
 ### Quick Test Scenarios
 
-The UI provides three preset scenario buttons:
-
 | Button | Command | Expected Outcome |
 |--------|---------|------------------|
-| **S-1 Valid** | `take the knife and cut the apple` |  Success — generates full action plan |
-| **S-2 Hallucination** | `pick up the bottle` |  Hallucination block (if bottle not detected) |
-| **S-3 Safety** | `cut the hand using knife` |  Safety block — physical harm pattern |
+| **S-1 Valid** | `take the knife and cut the apple` | ✅ Success — generates full action plan |
+| **S-2 Hallucination** | `pick up the bottle` | ⚠️ Hallucination block (if bottle not detected) |
+| **S-3 Safety** | `cut the hand using knife` | ⛔ Safety block — physical harm pattern |
 
 ### Optional: Claude API Integration
 
 Enter your Anthropic API key in the **API KEY** field to enable:
-- **Claude Vision** — detects additional objects beyond COCO's 80 classes.
+- **Claude Vision** — detects objects beyond COCO's 80 classes.
 - **LLM CoT** — generates more context-aware action plans using Claude.
 
 Without an API key, the system runs entirely offline using the local PyTorch model and demo CoT templates.
@@ -222,184 +176,83 @@ Without an API key, the system runs entirely offline using the local PyTorch mod
 ## API Reference
 
 ### `GET /api/status`
-
 Returns the model loading status.
+```json
+{ "ready": true, "loading": false, "error": null }
+```
+
+### `POST /api/detect`
+Runs multi-pass object detection on a base64-encoded image.
+
+**Request:** `{ "image": "data:image/jpeg;base64,...", "api_key": "" }`
 
 **Response:**
 ```json
 {
-  "ready": true,
-  "loading": false,
-  "error": null
+  "objects": [{ "class": "cup", "score": 0.9234, "bbox": [120.5, 80.3, 95.0, 110.2] }],
+  "width": 1280, "height": 720, "total": 1, "has_claude": false
 }
 ```
-
----
-
-### `POST /api/detect`
-
-Runs multi-pass object detection on a base64-encoded image.
-
-**Request Body:**
-```json
-{
-  "image": "data:image/jpeg;base64,/9j/4AAQ...",
-  "api_key": ""
-}
-```
-
-**Response (200):**
-```json
-{
-  "objects": [
-    {
-      "class": "cup",
-      "score": 0.9234,
-      "bbox": [120.5, 80.3, 95.0, 110.2]
-    }
-  ],
-  "width": 1280,
-  "height": 720,
-  "total": 1,
-  "has_claude": false
-}
-```
-
-- `bbox` format: `[x, y, width, height]` in pixels.
-- `score`: confidence score (0.0–1.0).
-- Objects with `"source": "claude-vision"` were detected by the optional Claude API.
-
-**Error Responses:**
-- `400` — Missing image, invalid base64, or no JSON body.
-- `500` — Detection processing error.
-- `503` — Model not loaded yet.
-
----
+- `bbox`: `[x, y, width, height]` in pixels · `score`: 0.0–1.0
+- Errors: `400` invalid input · `503` model not loaded · `500` processing error
 
 ### `POST /api/verify`
-
 Runs the full safety verification + CoT generation pipeline.
 
-**Request Body:**
-```json
-{
-  "prompt": "take the knife and cut the apple",
-  "objects": [
-    {"class": "knife"},
-    {"class": "apple"},
-    {"class": "person"}
-  ],
-  "api_key": ""
-}
-```
+**Request:** `{ "prompt": "take the knife and cut the apple", "objects": [...], "api_key": "" }`
 
-**Response (200):**
-```json
-{
-  "steps": [
-    {"type": "info", "num": "1", "text": "SCENE ANALYSIS: 3 object(s) detected..."},
-    {"type": "safe", "num": "4", "text": "SAFETY CHECK PASSED ✓ ..."},
-    {"type": "phase", "text": "── PHASE 1 · REACH & APPROACH ──"},
-    {"type": "safe", "num": "8", "text": "Compute 3D centroid of target..."},
-    {"type": "success", "text": "✓ ACTION PLAN GENERATED — READY FOR EXECUTION"}
-  ],
-  "result": "success",
-  "status": "active"
-}
-```
-
-**Result Values:**
+**Result values:**
 
 | `result` | `status` | Meaning |
 |----------|----------|---------|
-| `success` | `active` | Command is safe, action plan generated |
-| `safety_block` | `danger` | Command contains harm patterns — execution blocked |
-| `hallucination_block` | `warn` | Command references objects not present in scene |
+| `success` | `active` | Command safe — action plan generated |
+| `safety_block` | `danger` | Harm pattern detected — execution blocked |
+| `hallucination_block` | `warn` | Referenced object not present in scene |
 
-**Step Types:**
-
-| Type | Description |
-|------|-------------|
-| `info` | Informational step (scene analysis, inventory) |
-| `safe` | Passed check or action sub-step |
-| `warn` | Warning (hallucination detected) |
-| `danger` | Safety violation |
-| `halt` | Execution halted banner |
-| `success` | Plan complete banner |
-| `phase` | Phase header (e.g., `── PHASE 1 · REACH & APPROACH ──`) |
-| `divider` | Visual separator |
+**Step types:** `info` · `safe` · `warn` · `danger` · `halt` · `success` · `phase` · `divider`
 
 ---
 
-## Safety Verification Pipeline
+## Verification & Detection Pipeline
 
-The verification pipeline runs in strict order. If any stage fails, execution is blocked immediately:
+The four-stage pipeline below shows how each command is processed. Each stage can produce an early exit — only commands passing all verification stages reach plan generation.
 
-```
-Command Input
-     │
-     ▼
-┌─────────────────────┐
-│ 1. Scene Analysis    │  → Count objects, build inventory
-└──────────┬──────────┘
-           ▼
-┌─────────────────────┐
-│ 2. Safety Check      │  → Scan for harm patterns & dangerous combos
-│    ⛔ BLOCK if fail  │
-└──────────┬──────────┘
-           ▼
-┌─────────────────────┐
-│ 3. Hallucination     │  → Verify all mentioned objects exist in scene
-│    Check             │
-│    ⚠ BLOCK if fail   │
-└──────────┬──────────┘
-           ▼
-┌─────────────────────┐
-│ 4. CoT Generation    │  → Build structured action plan
-│    ✅ SUCCESS        │
-└─────────────────────┘
-```
+![VLA-4 Four-Stage Pipeline](fig2_pipeline.png)
+
+> **Fig. 2** — VLA-4 four-stage pipeline. Red exits (Stage 2) halt on safety violations; amber exits (Stage 3) block ungrounded object references. Only verified commands reach Stage 4 plan generation.
 
 ### Safety Rules
 
-**Harm Patterns** (regex-based):
-- Physical harm: `cut.*hand`, `stab.*person`, `harm.*human`, `attack.*person`, `kill.*person`, etc.
+**Harm Patterns (regex):**
+- Physical harm: `cut.*hand`, `stab.*person`, `harm.*human`, etc.
 - Self-harm: `self.harm`, `hurt myself/yourself`
 - Weapon misuse: `detonate`, `explode`, `shoot`
 
-**Dangerous Combos:**
-- Sharp objects (`knife`, `scissors`, `sword`) + human body parts (`person`, `hand`, `arm`, `face`) + harmful action verb in command = **BLOCKED**
+**Dangerous Combos:** sharp object + human body part + harmful verb → **BLOCKED**
 
-**Hallucination Detection:**
-- Extracts common object nouns from the command using a dictionary of 29 common household objects.
-- Cross-references against the detected object list.
-- If any mentioned object is not found in the scene → **HALLUCINATION BLOCK**.
+**Hallucination Detection:** 29-entry alias dict → cross-check vs. detected inventory → **BLOCK** if missing
 
----
-
-## Object Detection Pipeline
-
-The detector runs **4 passes** over each captured image and merges results with strict filtering:
-
-### Pass Details
+### Object Detection — 5-Pass Pipeline
 
 | Pass | Input | Threshold | Purpose |
 |------|-------|-----------|---------|
-| **Pass 1** | Full image (original resolution) | 0.40 | Primary anchors — largest/most visible objects |
-| **Pass 2** | 9 overlapping tiles (3×3 grid, 55% overlap) | 0.40 | Catch objects missed by full-frame scan |
-| **Pass 3** | 2× upscaled image | 0.40 | Small object enhancement |
-| **Pass 4A** | Contrast 160%, Brightness 115%, Color 140% | 0.35 | Low-visibility object recovery |
+| **Pass 1** | Full image | 0.40 | Primary — largest/most visible objects |
+| **Pass 2** | 3×3 tiled (55% overlap) | 0.40 | Small objects missed by full-frame |
+| **Pass 3** | 2× upscaled | 0.40 | Very small object enhancement |
+| **Pass 4A** | Contrast 160%, Brightness 115% | 0.35 | Low-visibility recovery |
 | **Pass 4B** | Contrast 200%, Brightness 140% | 0.30 | Dark object recovery |
 
-### Post-Processing
+**Post-processing:** cross-pass voting → box clipping → area filter (0.08%–85%) → aspect ratio filter (max 8:1) → edge penalty (4% margin, −30% score) → strict NMS → score floor (0.35)
 
-1. **Cross-Pass Voting** — Detections seen in only 1 pass must score ≥ 0.55 to survive.
-2. **Box Clipping** — Bounding boxes clipped to image boundaries.
-3. **Area Filter** — Boxes must cover 0.08%–85% of image area.
-4. **Aspect Ratio Filter** — Boxes with ratio > 8:1 are rejected.
-5. **Edge Penalty** — Detections centered within 4% of image edge get 30% score penalty.
-6. **Strict NMS** — Same-class IoU > 0.30 or cross-class IoU > 0.70 → suppressed.
-7. **Final Score Floor** — All detections below 0.35 are dropped.
+---
+
+## Case Studies
+
+The figure below shows the system's verified behaviour across three representative scenarios.
+
+![Case Study Outcomes](fig3_case_studies.png)
+
+> **Fig. 3** — Case study outcomes. **(A)** Cooking robot: blue plate hallucination caught by Stage 3 → CLARIFY → 10× failure reduction. **(B)** Industrial assembly: physical harm command halted in <1 ms; dangerous combo routed to CLARIFY. **(C)** Medical robotics: colour attribute unverifiable → CLARIFY; FPR ≤ 0.0017 derived as binding safety constraint.
 
 ---
 
@@ -407,80 +260,43 @@ The detector runs **4 passes** over each captured image and merges results with 
 
 ### Demo Mode (Offline)
 
-When no API key is provided, the system generates structured action plans using predefined phase templates. Six action types are supported:
+| Action Verbs | Template | Phases |
+|-------------|----------|--------|
+| pick, grab, take, lift, get, hold | `_PICK_PHASES` | Reach → Grasp → Lift |
+| cut, slice, chop | `_CUT_PHASES` | Acquire → Position → Cut → Retract |
+| place, put, set, drop, release | `_PLACE_PHASES` | Analyse → Transport → Place |
+| push, slide, move | `_PUSH_PHASES` | Plan → Execute |
+| pour, fill, empty | `_POUR_PHASES` | Grasp → Pour |
+| open, close, shut | `_OPEN_PHASES` | Identify → Open |
 
-| Action Verbs | Phase Template | Phases |
-|-------------|----------------|--------|
-| pick, grab, take, lift, get, hold | `_PICK_PHASES` | Reach & Approach → Grasp Execution → Lift & Confirm |
-| cut, slice, chop | `_CUT_PHASES` | Tool Acquisition → Target Positioning → Cutting Action → Tool Retraction |
-| place, put, set, drop, release | `_PLACE_PHASES` | Destination Analysis → Transport → Placement |
-| push, slide, move | `_PUSH_PHASES` | Contact Planning → Push Execution |
-| pour, fill, empty | `_POUR_PHASES` | Container Grasp → Pour Motion |
-| open, close, shut | `_OPEN_PHASES` | Mechanism Identification → Opening Action |
-
-Each plan begins with **PHASE 0 · PRECONDITIONS** (arm state check, reachability, 3D mapping) and ends with a **COMPLETION** phase (return to neutral, log action, signal operator).
-
-Commands with multiple verbs (e.g., "take the knife and cut the apple") generate a combined plan with all relevant phases numbered sequentially.
+Every plan starts with **PHASE 0 · PRECONDITIONS** and ends with **COMPLETION** (return to neutral, log, signal operator). Multi-verb commands generate combined plans with sequentially numbered phases.
 
 ### LLM Mode (Claude API)
 
-With an API key, the system sends a structured prompt to Claude requesting:
-- Numbered phases with clear headers.
-- 2–4 concrete sub-steps per phase.
-- Measurable values (distances in cm/m, forces in N, speeds in m/s).
-- Maximum 6 phases / 20 sub-steps.
-
-Falls back to demo mode automatically if the API call fails.
+Sends a structured prompt requesting numbered phases, 2–4 sub-steps each, measurable values (cm, N, m/s), max 6 phases / 20 steps. Falls back to demo mode automatically on API failure.
 
 ---
 
 ## Configuration & Tuning
 
-### Detection Thresholds
+All constants are defined at the top of each module — no deep code changes needed:
 
-All tuning constants are defined at the top of `detector.py`:
-
+**`detector.py` key thresholds:**
 ```python
-PASS1_THRESHOLD = 0.40       # Full-image pass
-PASS2_THRESHOLD = 0.40       # Tile pass
-PASS3_THRESHOLD = 0.40       # Upscale pass
-PASS4A_THRESHOLD = 0.35      # Contrast pass A
-PASS4B_THRESHOLD = 0.30      # Contrast pass B
-FINAL_SCORE_FLOOR = 0.35     # Post-merge minimum
-SINGLE_PASS_MIN_SCORE = 0.55 # Cross-pass voting threshold
-MIN_AREA_FRACTION = 0.0008   # Min box area (fraction of image)
-MAX_AREA_FRACTION = 0.85     # Max box area (fraction of image)
-MAX_ASPECT_RATIO = 8.0       # Max width:height or height:width
-EDGE_MARGIN_FRACTION = 0.04  # Edge penalty zone (fraction of image)
-NMS_SAME_CLASS_IOU = 0.30    # Same-class NMS IoU threshold
-NMS_CROSS_CLASS_IOU = 0.70   # Cross-class NMS IoU threshold
+PASS1_THRESHOLD = 0.40        SINGLE_PASS_MIN_SCORE = 0.55
+PASS4A_THRESHOLD = 0.35       NMS_SAME_CLASS_IOU = 0.30
+PASS4B_THRESHOLD = 0.30       NMS_CROSS_CLASS_IOU = 0.70
+FINAL_SCORE_FLOOR = 0.35
 ```
+- **Reduce false positives:** increase `FINAL_SCORE_FLOOR` and `SINGLE_PASS_MIN_SCORE`
+- **Increase recall:** lower pass thresholds and `FINAL_SCORE_FLOOR`
 
-**To reduce false positives:** Increase `FINAL_SCORE_FLOOR` and `SINGLE_PASS_MIN_SCORE`.  
-**To increase recall:** Lower pass thresholds and `FINAL_SCORE_FLOOR`.
+**`safety.py`:** extend `HARM_PATTERNS`, `DANGEROUS_COMBOS`, or `COMMON_OBJECTS`
 
-### Server Configuration
+**`cot_engine.py`:** modify phase templates or add new action types via `_match_actions()`
 
-In `app.py`:
-- `MAX_CONTENT_LENGTH`: Maximum upload size (default: 16 MB).
-- `host`: Bind address (default: `0.0.0.0` — all interfaces).
-- `port`: Server port (default: `5000`).
-
-### Safety Rules
-
-In `safety.py`:
-- `HARM_PATTERNS`: Add/modify regex patterns and labels.
-- `DANGEROUS_COMBOS`: Define object + body-part combinations.
-- `COMMON_OBJECTS`: Extend the hallucination dictionary.
-
-### CoT Templates
-
-In `cot_engine.py`:
-- Phase templates (`_PICK_PHASES`, `_CUT_PHASES`, etc.) can be modified or extended.
-- Add new action types by creating a new `_XXX_PHASES` list and adding the verb pattern to `_match_actions()`.
+**`app.py`:** `MAX_CONTENT_LENGTH` (default 16 MB) · `host` (default `0.0.0.0`) · `port` (default `5000`)
 
 ---
 
-## License
-
-This project is developed for academic purposes as part of the AIS (Artificial Intelligence Systems) coursework — Semester III, 2025.
+*Developed for academic purposes — AIS (Artificial Intelligence Systems), Semester III, 2025. Frankfurt University of Applied Sciences — Group VLA-4.*
