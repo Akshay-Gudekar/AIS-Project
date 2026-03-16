@@ -18,7 +18,6 @@ A lightweight **Vision–Language–Action (VLA)** safety verification system th
 - [Object Detection Pipeline](#object-detection-pipeline)
 - [Chain-of-Thought Engine](#chain-of-thought-engine)
 - [Configuration & Tuning](#configuration--tuning)
-- [References](#references)
 
 ---
 
@@ -479,17 +478,6 @@ In `safety.py`:
 In `cot_engine.py`:
 - Phase templates (`_PICK_PHASES`, `_CUT_PHASES`, etc.) can be modified or extended.
 - Add new action types by creating a new `_XXX_PHASES` list and adding the verb pattern to `_match_actions()`.
-
----
-
-## References
-
-The following research papers informed the design of this system (available in the `References/` directory):
-
-1. **CoT-VLA: Visual Chain-of-Thought Reasoning for Vision-Language-Action Models** — Foundation for using CoT reasoning in VLA systems.
-2. **Robotic Control via Embodied Chain-of-Thought Reasoning** — Embodied CoT approaches for robotic control.
-3. **SafeVLA** — Safety-aware Vision-Language-Action model design.
-4. **VLSA** — Vision-Language Safety Assessment framework.
 
 ---
 
